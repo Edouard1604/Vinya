@@ -1,0 +1,6 @@
+{
+  "buildCommand": "cd vinya-web && npm install && npm run build",
+  "outputDirectory": "vinya-web/dist",
+  "installCommand": "echo skip",
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+}
