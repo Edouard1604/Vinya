@@ -116,6 +116,11 @@ export const Home: React.FC = () => {
     setMotorDir(dir);
     const cmd: MotorCmd = `${dir}_${motorSpeed}` as MotorCmd;
     setMotorStatus(`${dir === 'FORWARD' ? '▶ Marche' : '◀ Arrière'} · ${motorSpeed === 'SLOW' ? 'Lent' : 'Rapide'} — envoi...`);
+    // MQTT en priorité (temps réel) — Firebase en backup
+    if (isClientConnected()) {
+      try { publishMessage('bzh/mecatro/dashboard/vinya/moteur_b', cmd.toLowerCase()); }
+      catch (e) { console.error('MQTT moteur_b error:', e); }
+    }
     const ok = await sendMotorCommand(cmd);
     setMotorStatus(ok
       ? `${dir === 'FORWARD' ? '▶ Marche' : '◀ Arrière'} · ${motorSpeed === 'SLOW' ? 'Lent' : 'Rapide'}`
@@ -126,6 +131,10 @@ export const Home: React.FC = () => {
   const stopMotor = async () => {
     if (motorDir !== 'FORWARD' && motorDir !== 'BACKWARD') return;
     setMotorDir('STOP');
+    if (isClientConnected()) {
+      try { publishMessage('bzh/mecatro/dashboard/vinya/moteur_b', 'stop'); }
+      catch (e) { console.error('MQTT moteur_b stop error:', e); }
+    }
     setMotorStatus('⏹ Arrêt...');
     await sendMotorCommand('STOP');
     setTimeout(() => { setMotorDir(null); setMotorStatus(''); }, 400);

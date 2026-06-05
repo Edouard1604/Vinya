@@ -44,6 +44,7 @@ TOPIC_MODE       = MQTT_ROOT + "/mode"
 TOPIC_DUREE      = MQTT_ROOT + "/duree"
 TOPIC_POMPE      = MQTT_ROOT + "/pompe"
 TOPIC_POMPE_DUREE= MQTT_ROOT + "/pompe_duree"
+TOPIC_MOTEUR_B   = MQTT_ROOT + "/moteur_b"   # pilotage manuel Canal B en temps réel
 TOPIC_TEMP       = MQTT_ROOT + "/temperature"
 TOPIC_HUM        = MQTT_ROOT + "/humidite"
 TOPIC_ETAT       = MQTT_ROOT + "/etat"
@@ -71,9 +72,9 @@ MOTOR_MIN_DUTY   = 0.30     # 30 % minimum moteur A (évite le démarrage brutal
 MOTOR_RAMP_MS    = 1_500    # durée de la montée progressive (ms)
 MOTOR_STOP_MS    = 800      # durée de la descente progressive (ms)
 
-# ── Canal B — duty cycles fixes (pas de potentiomètre) ───────────────────────
-MOTOR_B_SLOW     = int(65535 * 0.45)   # 45 % — vitesse lente
-MOTOR_B_FAST     = int(65535 * 0.85)   # 85 % — vitesse rapide (évite 100% instable)
+# ── Canal B — même pot que A, ratios SLOW/FAST appliqués dessus ──────────────
+MOTOR_B_SLOW_RATIO = 0.5   # 50 % de la vitesse pot pour mode lent
+MOTOR_B_FAST_RATIO = 1.0   # 100 % de la vitesse pot pour mode rapide
 
 # ── Init hardware ─────────────────────────────────────────────────────────────
 # Canal A — bâche
@@ -107,9 +108,10 @@ mode_auto     = False
 temperature   = 0.0
 humidite      = 0.0
 mqtt_client   = None
-duree_action  = 30      # Durée de l'action moteur bâche en secondes (par défaut 30 s)
-motor_stop_at = None    # ticks_ms cible pour l'arrêt automatique moteur (None = pas de timer)
-motor_action  = None    # 'deploy' ou 'retract' — indique l'opération en cours
+duree_action        = 30    # Durée de l'action moteur bâche en secondes (par défaut 30 s)
+motor_stop_at       = None  # ticks_ms cible pour l'arrêt automatique moteur
+motor_action        = None  # 'deploy' ou 'retract' — indique l'opération en cours
+retract_blocked_until = None  # après un déploiement, bloque les rétractations parasites
 duree_pompe   = 30      # Durée de l'action pompe en secondes (par défaut 30 s)
 pompe_active  = False   # État courant de la pompe
 pompe_stop_at = None    # ticks_ms cible pour l'arrêt automatique pompe (None = pas de timer)
@@ -169,9 +171,11 @@ def moteur_deployer():
         motor_a_pwm.duty_u16(int((i / steps) * cible))
         time.sleep_ms(delai)
 
-    tarp_deploye  = True
-    motor_action  = 'deploy'
-    motor_stop_at = time.ticks_ms() + duree_action * 1000
+    tarp_deploye          = True
+    motor_action          = 'deploy'
+    motor_stop_at         = time.ticks_ms() + duree_action * 1000
+    # Bloque toute rétractation pendant duree_action + 5 s (évite Firebase parasite)
+    retract_blocked_until = time.ticks_ms() + (duree_action + 5) * 1000
     led.on()
     print("[MOTEUR A] Déploiement — arrêt dans {}s".format(duree_action))
 
@@ -255,9 +259,13 @@ def _set_direction_b(forward: bool):
 def moteur_b_demarrer(forward: bool, fast: bool):
     """
     Lance le moteur B en avant ou arrière, à vitesse lente ou rapide.
+    Utilise le même potentiomètre que Canal A pour avoir la même vitesse de base.
     Rampe courte (300 ms) pour protéger le pont en H.
     """
-    duty_cible = MOTOR_B_FAST if fast else MOTOR_B_SLOW
+    pot_duty   = lire_vitesse_pot()
+    ratio      = MOTOR_B_FAST_RATIO if fast else MOTOR_B_SLOW_RATIO
+    duty_cible = int(pot_duty * ratio)
+
     _set_direction_b(forward)
 
     # Rampe courte de 300 ms (12 paliers × 25 ms)
@@ -403,6 +411,13 @@ def effacer_commande_firebase():
 # MQTT
 # =============================================================================
 
+def _retract_guarded() -> bool:
+    """Retourne True si une rétractation est autorisée (garde inactive)."""
+    if retract_blocked_until is None:
+        return True
+    return time.ticks_diff(time.ticks_ms(), retract_blocked_until) >= 0
+
+
 def on_message(topic, msg):
     """Callback MQTT — traite les commandes reçues en temps réel."""
     global mode_auto, duree_action, duree_pompe
@@ -429,16 +444,32 @@ def on_message(topic, msg):
             _mqtt_publish(TOPIC_ETAT, "deploye")
 
         elif payload == "fermer" and tarp_deploye:
-            moteur_retracter()
-            effacer_commande_firebase()  # idem
-            publier_meteo_firebase()
-            _mqtt_publish(TOPIC_ETAT, "retractation")
+            if _retract_guarded():
+                moteur_retracter()
+                effacer_commande_firebase()
+                publier_meteo_firebase()
+                _mqtt_publish(TOPIC_ETAT, "retractation")
+            else:
+                print("[GARDE] Rétractation MQTT bloquée — déploiement récent")
 
         elif payload == "stop":
             moteur_arreter()
             effacer_commande_firebase()
             publier_meteo_firebase()
             _mqtt_publish(TOPIC_ETAT, "range")
+
+    elif topic_s == TOPIC_MOTEUR_B:
+        # Pilotage manuel Canal B en temps réel via MQTT (évite la latence Firebase 3s)
+        if payload == "forward_slow":
+            moteur_b_demarrer(forward=True,  fast=False)
+        elif payload == "forward_fast":
+            moteur_b_demarrer(forward=True,  fast=True)
+        elif payload == "backward_slow":
+            moteur_b_demarrer(forward=False, fast=False)
+        elif payload == "backward_fast":
+            moteur_b_demarrer(forward=False, fast=True)
+        elif payload in ("stop", "idle"):
+            moteur_b_arreter()
 
     elif topic_s == TOPIC_POMPE_DUREE:
         # Mise à jour de la durée d'action pompe
@@ -484,7 +515,8 @@ def connecter_mqtt() -> bool:
         mqtt_client.subscribe(TOPIC_DUREE)
         mqtt_client.subscribe(TOPIC_POMPE)
         mqtt_client.subscribe(TOPIC_POMPE_DUREE)
-        print("[MQTT] Connecté — abonnements: ordre, mode, duree, pompe, pompe_duree")
+        mqtt_client.subscribe(TOPIC_MOTEUR_B)
+        print("[MQTT] Connecté — abonnements: ordre, mode, duree, pompe, pompe_duree, moteur_b")
         return True
     except Exception as e:
         print("[MQTT] Erreur connexion : {}".format(e))
@@ -504,6 +536,19 @@ def main():
 
     # Initialisation
     connecter_wifi()
+
+    # ── Nettoyage des commandes Firebase au démarrage ─────────────────────────
+    # Évite que des commandes d'une session précédente (ex: RETRACT) se déclenchent
+    _HDR = {"Content-Type": "application/json"}
+    for url in [CMD_URL,
+                FIREBASE_BASE + "/motorCommand.json",
+                FIREBASE_BASE + "/pumpCommand.json"]:
+        try:
+            urequests.put(url, data='"null"', headers=_HDR).close()
+        except Exception as e:
+            print("[INIT] Erreur clear Firebase {} : {}".format(url, e))
+    print("[INIT] Firebase nettoyé")
+
     connecter_mqtt()
     lire_dht()
     publier_meteo_firebase()
@@ -591,10 +636,14 @@ def main():
                 _mqtt_publish(TOPIC_ETAT, "deploye")
 
             elif cmd == "RETRACT" and tarp_deploye:
-                moteur_retracter()          # ← sens ARRIÈRE
-                effacer_commande_firebase()
-                publier_meteo_firebase()
-                _mqtt_publish(TOPIC_ETAT, "retractation")
+                if _retract_guarded():
+                    moteur_retracter()
+                    effacer_commande_firebase()
+                    publier_meteo_firebase()
+                    _mqtt_publish(TOPIC_ETAT, "retractation")
+                else:
+                    effacer_commande_firebase()  # efface quand même pour ne pas boucler
+                    print("[GARDE] Rétractation Firebase bloquée — déploiement récent")
 
             elif cmd == "STOP":
                 moteur_arreter()
