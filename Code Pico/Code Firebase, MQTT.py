@@ -76,6 +76,10 @@ MOTOR_STOP_MS    = 800      # durée de la descente progressive (ms)
 MOTOR_B_SLOW_RATIO = 0.5   # 50 % de la vitesse pot pour mode lent
 MOTOR_B_FAST_RATIO = 1.0   # 100 % de la vitesse pot pour mode rapide
 
+# ── Inversion direction Canal A ───────────────────────────────────────────────
+# Mettre True si le moteur bâche tourne dans le mauvais sens lors du déploiement
+MOTOR_A_INVERT = True
+
 # ── Init hardware ─────────────────────────────────────────────────────────────
 # Canal A — bâche
 motor_a_pwm = PWM(Pin(MOTOR_A_ENA, Pin.OUT))
@@ -136,9 +140,14 @@ def lire_vitesse_pot() -> int:
 def _set_direction_a(forward: bool):
     """
     Canal A — sens de rotation moteur bâche.
-      forward=True  → IN1=1, IN2=0  (déploiement)
-      forward=False → IN1=0, IN2=1  (rétractation)
+    MOTOR_A_INVERT permet de corriger un branchement inversé sur OUT1/OUT2
+    sans avoir à rebrancher physiquement les fils moteur.
+      forward=True  → déploiement
+      forward=False → rétractation
     """
+    # Applique l'inversion si les fils moteur sont branchés à l'envers
+    if MOTOR_A_INVERT:
+        forward = not forward
     if forward:
         motor_in1.value(1)
         motor_in2.value(0)
