@@ -41,6 +41,7 @@ MQTT_PORT   = 1883
 MQTT_ROOT   = "bzh/mecatro/dashboard/vinya"
 TOPIC_ORDRE = MQTT_ROOT + "/ordre"
 TOPIC_MODE  = MQTT_ROOT + "/mode"
+TOPIC_DUREE = MQTT_ROOT + "/duree"
 TOPIC_TEMP  = MQTT_ROOT + "/temperature"
 TOPIC_HUM   = MQTT_ROOT + "/humidite"
 TOPIC_ETAT  = MQTT_ROOT + "/etat"
@@ -69,11 +70,13 @@ led     = Pin(LED_PIN, Pin.OUT)
 btn     = Pin(BTN_PIN, Pin.IN, Pin.PULL_UP)
 
 # ── État global ───────────────────────────────────────────────────────────────
-tarp_deploye = False
-mode_auto    = False
-temperature  = 0.0
-humidite     = 0.0
-mqtt_client  = None
+tarp_deploye  = False
+mode_auto     = False
+temperature   = 0.0
+humidite      = 0.0
+mqtt_client   = None
+duree_action  = 30      # Durée de l'action moteur en secondes (par défaut 30 s)
+motor_stop_at = None    # ticks_ms cible pour l'arrêt automatique (None = pas de timer)
 
 # =============================================================================
 # MOTEUR DC (PWM + Potentiomètre)
@@ -95,10 +98,11 @@ def lire_vitesse_pot() -> int:
 def moteur_deployer():
     """
     Lance le moteur à la vitesse définie par le potentiomètre.
-    Montée progressive sur MOTOR_RAMP_MS pour protéger la mécanique
-    et éviter les pics de courant au démarrage.
+    Montée progressive sur MOTOR_RAMP_MS pour protéger la mécanique.
+    Programme un arrêt automatique après duree_action secondes
+    (géré par la boucle principale via motor_stop_at).
     """
-    global tarp_deploye
+    global tarp_deploye, motor_stop_at
 
     cible = lire_vitesse_pot()
     steps = 60
@@ -112,16 +116,20 @@ def moteur_deployer():
         motor_pwm.duty_u16(duty)
         time.sleep_ms(delai)
 
-    tarp_deploye = True
+    tarp_deploye  = True
+    motor_stop_at = time.ticks_ms() + duree_action * 1000
     led.on()
-    print("[MOTEUR] Bâche déployée — moteur en marche")
+    print("[MOTEUR] Bâche en déploiement — arrêt automatique dans {}s".format(duree_action))
 
 
 def moteur_arreter():
     """
     Coupe le moteur avec descente progressive sur MOTOR_STOP_MS.
+    Annule aussi le timer d'arrêt automatique.
     """
-    global tarp_deploye
+    global tarp_deploye, motor_stop_at
+
+    motor_stop_at = None   # Annule le timer automatique si présent
 
     actuel = motor_pwm.duty_u16()
     if actuel == 0:
@@ -236,13 +244,23 @@ def effacer_commande_firebase():
 
 def on_message(topic, msg):
     """Callback MQTT — traite les commandes reçues en temps réel."""
-    global mode_auto
+    global mode_auto, duree_action
 
     payload = msg.decode().strip().lower()
     topic_s = topic.decode()
     print("[MQTT] {} → {}".format(topic_s, payload))
 
-    if topic_s == TOPIC_ORDRE:
+    if topic_s == TOPIC_DUREE:
+        # Mise à jour de la durée d'action moteur
+        try:
+            val = int(float(payload))
+            if 1 <= val <= 300:
+                duree_action = val
+                print("[DUREE] Durée mise à jour → {}s".format(duree_action))
+        except ValueError:
+            print("[DUREE] Valeur invalide : {}".format(payload))
+
+    elif topic_s == TOPIC_ORDRE:
         if payload == "ouvrir" and not tarp_deploye:
             moteur_deployer()
             publier_meteo_firebase()
@@ -278,7 +296,8 @@ def connecter_mqtt() -> bool:
         mqtt_client.connect()
         mqtt_client.subscribe(TOPIC_ORDRE)
         mqtt_client.subscribe(TOPIC_MODE)
-        print("[MQTT] Connecté et abonné ({} + {})".format(TOPIC_ORDRE, TOPIC_MODE))
+        mqtt_client.subscribe(TOPIC_DUREE)
+        print("[MQTT] Connecté et abonné ({} + {} + {})".format(TOPIC_ORDRE, TOPIC_MODE, TOPIC_DUREE))
         return True
     except Exception as e:
         print("[MQTT] Erreur connexion : {}".format(e))
@@ -337,6 +356,13 @@ def main():
             except Exception as e:
                 print("[MQTT] check_msg perdu : {} — reconnexion...".format(e))
                 connecter_mqtt()
+
+        # ── Auto-stop moteur après duree_action secondes ──────────────────────
+        if motor_stop_at is not None and time.ticks_diff(now, motor_stop_at) >= 0:
+            print("[MOTEUR] Auto-stop — {}s écoulés".format(duree_action))
+            moteur_arreter()
+            publier_meteo_firebase()
+            _mqtt_publish(TOPIC_ETAT, "range")
 
         # ── Poll commandes Firebase ───────────────────────────────────────────
         if time.ticks_diff(now, t_firebase) >= INTERVAL_FIREBASE:

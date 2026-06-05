@@ -17,6 +17,7 @@ export const Home: React.FC = () => {
   const [motorDir, setMotorDir]       = useState<'FORWARD' | 'BACKWARD' | 'STOP' | null>(null);
   const [motorStatus, setMotorStatus] = useState<string>('');
   const [isConsoleConnected, setIsConsoleConnected] = useState(false);
+  const [tarpDuration, setTarpDuration] = useState(30);
   const navigate = useNavigate();
   const AUTO_TEMP_THRESHOLD = 24;
 
@@ -31,7 +32,11 @@ export const Home: React.FC = () => {
     if (data.isTarpDeployed) return;
     let mqttSuccess = false;
     if (isClientConnected()) {
-      try { publishMessage('bzh/mecatro/dashboard/vinya/ordre', 'ouvrir'); mqttSuccess = true; }
+      try {
+        publishMessage('bzh/mecatro/dashboard/vinya/duree', String(tarpDuration));
+        publishMessage('bzh/mecatro/dashboard/vinya/ordre', 'ouvrir');
+        mqttSuccess = true;
+      }
       catch (e) { console.error('MQTT Error:', e); }
     }
     setTarpStatus('Envoi de la commande...');
@@ -53,7 +58,11 @@ export const Home: React.FC = () => {
     if (!data.isTarpDeployed) return;
     let mqttSuccess = false;
     if (isClientConnected()) {
-      try { publishMessage('bzh/mecatro/dashboard/vinya/ordre', 'fermer'); mqttSuccess = true; }
+      try {
+        publishMessage('bzh/mecatro/dashboard/vinya/duree', String(tarpDuration));
+        publishMessage('bzh/mecatro/dashboard/vinya/ordre', 'fermer');
+        mqttSuccess = true;
+      }
       catch (e) { console.error('MQTT Error:', e); }
     }
     setTarpStatus('Envoi de la commande...');
@@ -240,6 +249,41 @@ export const Home: React.FC = () => {
                 Rétracter
               </ActionButton>
             </div>
+          </div>
+
+          {/* ── Curseur durée d'action ── */}
+          <div className="mt-6 px-4 flex flex-col items-center gap-2">
+            <div className="flex items-center justify-between w-full max-w-sm">
+              <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">Durée d'action</span>
+              <span className="text-vinya-secondary font-black text-base tabular-nums">
+                {tarpDuration}s
+              </span>
+            </div>
+            <div className="relative w-full max-w-sm">
+              <input
+                type="range"
+                min={5}
+                max={120}
+                step={5}
+                value={tarpDuration}
+                onChange={(e) => setTarpDuration(Number(e.target.value))}
+                className="w-full h-2 rounded-full appearance-none cursor-pointer"
+                style={{
+                  background: `linear-gradient(to right, #640D14 0%, #640D14 ${((tarpDuration - 5) / 115) * 100}%, #e5e7eb ${((tarpDuration - 5) / 115) * 100}%, #e5e7eb 100%)`,
+                  accentColor: '#640D14',
+                }}
+              />
+            </div>
+            <div className="flex justify-between w-full max-w-sm text-[10px] text-gray-300 font-medium select-none">
+              <span>5s</span>
+              <span>30s</span>
+              <span>60s</span>
+              <span>90s</span>
+              <span>120s</span>
+            </div>
+            <p className="text-[10px] text-gray-400 mt-0.5">
+              Le moteur s'arrête automatiquement après <span className="font-bold text-vinya-secondary">{tarpDuration} secondes</span>
+            </p>
           </div>
 
           {/* Bouton Pompe */}
