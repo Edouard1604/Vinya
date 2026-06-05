@@ -105,6 +105,7 @@ humidite      = 0.0
 mqtt_client   = None
 duree_action  = 30      # Durée de l'action moteur bâche en secondes (par défaut 30 s)
 motor_stop_at = None    # ticks_ms cible pour l'arrêt automatique moteur (None = pas de timer)
+motor_action  = None    # 'deploy' ou 'retract' — indique l'opération en cours
 duree_pompe   = 30      # Durée de l'action pompe en secondes (par défaut 30 s)
 pompe_active  = False   # État courant de la pompe
 pompe_stop_at = None    # ticks_ms cible pour l'arrêt automatique pompe (None = pas de timer)
@@ -146,8 +147,10 @@ def moteur_deployer():
     Canal A — lance le moteur en sens AVANT (déploiement bâche).
     Montée progressive sur MOTOR_RAMP_MS.
     Auto-stop après duree_action secondes via motor_stop_at.
+    tarp_deploye = True est mis immédiatement, il ne sera remis à False
+    qu'à la fin d'une rétractation (pas à l'auto-stop).
     """
-    global tarp_deploye, motor_stop_at
+    global tarp_deploye, motor_stop_at, motor_action
 
     cible = lire_vitesse_pot()
     steps = 60
@@ -163,6 +166,7 @@ def moteur_deployer():
         time.sleep_ms(delai)
 
     tarp_deploye  = True
+    motor_action  = 'deploy'
     motor_stop_at = time.ticks_ms() + duree_action * 1000
     led.on()
     print("[MOTEUR A] Déploiement — arrêt dans {}s".format(duree_action))
@@ -171,9 +175,10 @@ def moteur_deployer():
 def moteur_retracter():
     """
     Canal A — lance le moteur en sens ARRIÈRE (rétractation bâche).
-    Auto-stop après duree_action secondes.
+    tarp_deploye sera mis à False uniquement quand l'auto-stop se déclenche
+    (fin physique de la rétractation), pas avant.
     """
-    global tarp_deploye, motor_stop_at
+    global motor_stop_at, motor_action
 
     cible = lire_vitesse_pot()
     steps = 60
@@ -188,9 +193,8 @@ def moteur_retracter():
         motor_a_pwm.duty_u16(int((i / steps) * cible))
         time.sleep_ms(delai)
 
-    tarp_deploye  = False
+    motor_action  = 'retract'
     motor_stop_at = time.ticks_ms() + duree_action * 1000
-    led.off()
     print("[MOTEUR A] Rétractation — arrêt dans {}s".format(duree_action))
 
 
@@ -342,7 +346,7 @@ def effacer_commande_firebase():
 
 def on_message(topic, msg):
     """Callback MQTT — traite les commandes reçues en temps réel."""
-    global mode_auto, duree_action
+    global mode_auto, duree_action, duree_pompe
 
     payload = msg.decode().strip().lower()
     topic_s = topic.decode()
@@ -361,15 +365,19 @@ def on_message(topic, msg):
     elif topic_s == TOPIC_ORDRE:
         if payload == "ouvrir" and not tarp_deploye:
             moteur_deployer()
+            effacer_commande_firebase()  # évite que Firebase re-déclenche la même commande
             publier_meteo_firebase()
             _mqtt_publish(TOPIC_ETAT, "deploye")
 
         elif payload == "fermer" and tarp_deploye:
-            moteur_retracter()          # ← sens ARRIÈRE pour ranger la bâche
+            moteur_retracter()
+            effacer_commande_firebase()  # idem
             publier_meteo_firebase()
             _mqtt_publish(TOPIC_ETAT, "retractation")
+
         elif payload == "stop":
             moteur_arreter()
+            effacer_commande_firebase()
             publier_meteo_firebase()
             _mqtt_publish(TOPIC_ETAT, "range")
 
@@ -479,10 +487,32 @@ def main():
 
         # ── Auto-stop moteur après duree_action secondes ──────────────────────
         if motor_stop_at is not None and time.ticks_diff(now, motor_stop_at) >= 0:
-            print("[MOTEUR] Auto-stop — {}s écoulés".format(duree_action))
-            moteur_arreter()
+            global tarp_deploye, motor_action
+            motor_stop_at = None
+            # Descente progressive PWM sans passer par moteur_arreter()
+            # pour ne pas changer tarp_deploye incorrectement
+            actuel = motor_a_pwm.duty_u16()
+            steps  = 40
+            delai  = MOTOR_STOP_MS // steps
+            for i in range(steps, -1, -1):
+                motor_a_pwm.duty_u16(int((i / steps) * actuel))
+                time.sleep_ms(delai)
+            motor_a_pwm.duty_u16(0)
+            motor_in1.value(0)
+            motor_in2.value(0)
+
+            if motor_action == 'retract':
+                # Rétractation terminée → bâche rangée
+                tarp_deploye = False
+                led.off()
+                print("[MOTEUR] Auto-stop rétractation — bâche rangée")
+                _mqtt_publish(TOPIC_ETAT, "range")
+            else:
+                # Déploiement terminé → moteur arrêté mais bâche toujours déployée
+                print("[MOTEUR] Auto-stop déploiement — bâche déployée, moteur arrêté")
+                _mqtt_publish(TOPIC_ETAT, "deploye_arrete")
+            motor_action = None
             publier_meteo_firebase()
-            _mqtt_publish(TOPIC_ETAT, "range")
 
         # ── Auto-stop pompe après duree_pompe secondes ────────────────────────
         if pompe_stop_at is not None and time.ticks_diff(now, pompe_stop_at) >= 0:
