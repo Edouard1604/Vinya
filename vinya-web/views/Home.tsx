@@ -18,6 +18,7 @@ export const Home: React.FC = () => {
   const [motorStatus, setMotorStatus] = useState<string>('');
   const [isConsoleConnected, setIsConsoleConnected] = useState(false);
   const [tarpDuration, setTarpDuration] = useState(30);
+  const [pumpDuration, setPumpDuration] = useState(30);
   const navigate = useNavigate();
   const AUTO_TEMP_THRESHOLD = 24;
 
@@ -85,10 +86,15 @@ export const Home: React.FC = () => {
     const nextState = !pumpActive;
     const cmd = nextState ? 'ON' : 'OFF';
     setPumpStatus(nextState ? 'Démarrage pompe...' : 'Arrêt pompe...');
+    // Publie la durée via MQTT avant la commande ON
+    if (nextState && isClientConnected()) {
+      try { publishMessage('bzh/mecatro/dashboard/vinya/pompe_duree', String(pumpDuration)); }
+      catch (e) { console.error('MQTT pump duration error:', e); }
+    }
     const ok = await sendPumpCommand(cmd);
     if (ok) {
       setPumpActive(nextState);
-      setPumpStatus(nextState ? 'Pompe active' : 'Pompe arrêtée');
+      setPumpStatus(nextState ? `Pompe active (${pumpDuration}s)` : 'Pompe arrêtée');
     } else {
       setPumpStatus('Erreur connexion');
     }
@@ -322,6 +328,37 @@ export const Home: React.FC = () => {
             {pumpStatus && (
               <span className="text-cyan-600 font-semibold text-sm animate-pulse">{pumpStatus}</span>
             )}
+
+            {/* ── Curseur durée pompe ── */}
+            <div className="flex flex-col items-center gap-2 w-full max-w-sm mt-1">
+              <div className="flex items-center justify-between w-full">
+                <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-gray-400">Durée pompe</span>
+                <span className="text-cyan-600 font-black text-base tabular-nums">{pumpDuration}s</span>
+              </div>
+              <input
+                type="range"
+                min={5}
+                max={120}
+                step={5}
+                value={pumpDuration}
+                onChange={(e) => setPumpDuration(Number(e.target.value))}
+                className="w-full h-2 rounded-full appearance-none cursor-pointer"
+                style={{
+                  background: `linear-gradient(to right, #0e7490 0%, #0e7490 ${((pumpDuration - 5) / 115) * 100}%, #e5e7eb ${((pumpDuration - 5) / 115) * 100}%, #e5e7eb 100%)`,
+                  accentColor: '#0e7490',
+                }}
+              />
+              <div className="flex justify-between w-full text-[10px] text-gray-300 font-medium select-none">
+                <span>5s</span>
+                <span>30s</span>
+                <span>60s</span>
+                <span>90s</span>
+                <span>120s</span>
+              </div>
+              <p className="text-[10px] text-gray-400">
+                La pompe s'arrête automatiquement après <span className="font-bold text-cyan-600">{pumpDuration} secondes</span>
+              </p>
+            </div>
           </div>
 
           {/* Status feedback */}

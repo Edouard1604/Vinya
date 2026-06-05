@@ -39,12 +39,14 @@ CMD_URL       = FIREBASE_BASE + "/tarpCommand.json"
 MQTT_BROKER = "mqtt.dev.icam.school"
 MQTT_PORT   = 1883
 MQTT_ROOT   = "bzh/mecatro/dashboard/vinya"
-TOPIC_ORDRE = MQTT_ROOT + "/ordre"
-TOPIC_MODE  = MQTT_ROOT + "/mode"
-TOPIC_DUREE = MQTT_ROOT + "/duree"
-TOPIC_TEMP  = MQTT_ROOT + "/temperature"
-TOPIC_HUM   = MQTT_ROOT + "/humidite"
-TOPIC_ETAT  = MQTT_ROOT + "/etat"
+TOPIC_ORDRE      = MQTT_ROOT + "/ordre"
+TOPIC_MODE       = MQTT_ROOT + "/mode"
+TOPIC_DUREE      = MQTT_ROOT + "/duree"
+TOPIC_POMPE      = MQTT_ROOT + "/pompe"
+TOPIC_POMPE_DUREE= MQTT_ROOT + "/pompe_duree"
+TOPIC_TEMP       = MQTT_ROOT + "/temperature"
+TOPIC_HUM        = MQTT_ROOT + "/humidite"
+TOPIC_ETAT       = MQTT_ROOT + "/etat"
 
 # ── Pins ──────────────────────────────────────────────────────────────────────
 MOTOR_PIN      = 14     # PWM → contrôleur de vitesse
@@ -52,6 +54,7 @@ POT_PIN        = 26     # ADC0 → potentiomètre
 DHT_PIN        = 15     # DHT11
 LED_PIN        = 27     # LED status
 BTN_PIN        = 20     # Bouton mode
+PUMP_PIN       = 4      # Relais pompe (HIGH = ON)
 
 # ── Paramètres moteur ─────────────────────────────────────────────────────────
 MOTOR_PWM_FREQ   = 10_000   # 10 kHz (adapté aux contrôleurs brushed)
@@ -68,6 +71,8 @@ pot     = ADC(Pin(POT_PIN))
 capteur = dht.DHT11(Pin(DHT_PIN))
 led     = Pin(LED_PIN, Pin.OUT)
 btn     = Pin(BTN_PIN, Pin.IN, Pin.PULL_UP)
+pompe   = Pin(PUMP_PIN, Pin.OUT)
+pompe.off()    # pompe arrêtée au démarrage
 
 # ── État global ───────────────────────────────────────────────────────────────
 tarp_deploye  = False
@@ -75,8 +80,11 @@ mode_auto     = False
 temperature   = 0.0
 humidite      = 0.0
 mqtt_client   = None
-duree_action  = 30      # Durée de l'action moteur en secondes (par défaut 30 s)
-motor_stop_at = None    # ticks_ms cible pour l'arrêt automatique (None = pas de timer)
+duree_action  = 30      # Durée de l'action moteur bâche en secondes (par défaut 30 s)
+motor_stop_at = None    # ticks_ms cible pour l'arrêt automatique moteur (None = pas de timer)
+duree_pompe   = 30      # Durée de l'action pompe en secondes (par défaut 30 s)
+pompe_active  = False   # État courant de la pompe
+pompe_stop_at = None    # ticks_ms cible pour l'arrêt automatique pompe (None = pas de timer)
 
 # =============================================================================
 # MOTEUR DC (PWM + Potentiomètre)
@@ -151,6 +159,30 @@ def moteur_arreter():
     tarp_deploye = False
     led.off()
     print("[MOTEUR] Arrêté")
+
+# =============================================================================
+# POMPE
+# =============================================================================
+
+def pompe_demarrer():
+    """
+    Active la pompe et programme un arrêt automatique après duree_pompe secondes.
+    """
+    global pompe_active, pompe_stop_at
+    pompe.on()
+    pompe_active  = True
+    pompe_stop_at = time.ticks_ms() + duree_pompe * 1000
+    print("[POMPE] Démarrée — arrêt automatique dans {}s".format(duree_pompe))
+
+
+def pompe_arreter():
+    """Coupe la pompe et annule le timer automatique."""
+    global pompe_active, pompe_stop_at
+    pompe.off()
+    pompe_active  = False
+    pompe_stop_at = None
+    print("[POMPE] Arrêtée")
+
 
 # =============================================================================
 # WiFi
@@ -271,6 +303,22 @@ def on_message(topic, msg):
             publier_meteo_firebase()
             _mqtt_publish(TOPIC_ETAT, "range")
 
+    elif topic_s == TOPIC_POMPE_DUREE:
+        # Mise à jour de la durée d'action pompe
+        try:
+            val = int(float(payload))
+            if 1 <= val <= 300:
+                duree_pompe = val
+                print("[POMPE DUREE] Durée mise à jour → {}s".format(duree_pompe))
+        except ValueError:
+            print("[POMPE DUREE] Valeur invalide : {}".format(payload))
+
+    elif topic_s == TOPIC_POMPE:
+        if payload == "on":
+            pompe_demarrer()
+        elif payload == "off":
+            pompe_arreter()
+
     elif topic_s == TOPIC_MODE:
         mode_auto = (payload == "auto")
         print("[MODE] {}".format("AUTO" if mode_auto else "MANU"))
@@ -297,7 +345,9 @@ def connecter_mqtt() -> bool:
         mqtt_client.subscribe(TOPIC_ORDRE)
         mqtt_client.subscribe(TOPIC_MODE)
         mqtt_client.subscribe(TOPIC_DUREE)
-        print("[MQTT] Connecté et abonné ({} + {} + {})".format(TOPIC_ORDRE, TOPIC_MODE, TOPIC_DUREE))
+        mqtt_client.subscribe(TOPIC_POMPE)
+        mqtt_client.subscribe(TOPIC_POMPE_DUREE)
+        print("[MQTT] Connecté — abonnements: ordre, mode, duree, pompe, pompe_duree")
         return True
     except Exception as e:
         print("[MQTT] Erreur connexion : {}".format(e))
@@ -364,8 +414,15 @@ def main():
             publier_meteo_firebase()
             _mqtt_publish(TOPIC_ETAT, "range")
 
+        # ── Auto-stop pompe après duree_pompe secondes ────────────────────────
+        if pompe_stop_at is not None and time.ticks_diff(now, pompe_stop_at) >= 0:
+            print("[POMPE] Auto-stop — {}s écoulés".format(duree_pompe))
+            pompe_arreter()
+            _mqtt_publish(TOPIC_ETAT, "pompe_off")
+
         # ── Poll commandes Firebase ───────────────────────────────────────────
         if time.ticks_diff(now, t_firebase) >= INTERVAL_FIREBASE:
+            # Commande bâche
             cmd = lire_commande_firebase()
 
             if cmd == "DEPLOY" and not tarp_deploye:
@@ -379,6 +436,24 @@ def main():
                 effacer_commande_firebase()
                 publier_meteo_firebase()
                 _mqtt_publish(TOPIC_ETAT, "range")
+
+            # Commande pompe
+            try:
+                r_pompe = urequests.get(FIREBASE_BASE + "/pumpCommand.json")
+                pump_cmd = r_pompe.text.strip().strip('"').upper()
+                r_pompe.close()
+                if pump_cmd == "ON" and not pompe_active:
+                    pompe_demarrer()
+                    urequests.put(FIREBASE_BASE + "/pumpCommand.json",
+                                  data='"null"',
+                                  headers={"Content-Type": "application/json"}).close()
+                elif pump_cmd == "OFF" and pompe_active:
+                    pompe_arreter()
+                    urequests.put(FIREBASE_BASE + "/pumpCommand.json",
+                                  data='"null"',
+                                  headers={"Content-Type": "application/json"}).close()
+            except Exception as e:
+                print("[Firebase] Erreur poll pompe : {}".format(e))
 
             t_firebase = now
 
