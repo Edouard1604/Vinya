@@ -67,9 +67,13 @@ PUMP_PIN       = 4      # Relais pompe (HIGH = ON)
 
 # ── Paramètres moteur ─────────────────────────────────────────────────────────
 MOTOR_PWM_FREQ   = 10_000   # 10 kHz (adapté aux contrôleurs brushed)
-MOTOR_MIN_DUTY   = 0.30     # 30 % minimum (évite le démarrage brutal)
+MOTOR_MIN_DUTY   = 0.30     # 30 % minimum moteur A (évite le démarrage brutal)
 MOTOR_RAMP_MS    = 1_500    # durée de la montée progressive (ms)
 MOTOR_STOP_MS    = 800      # durée de la descente progressive (ms)
+
+# ── Canal B — duty cycles fixes (pas de potentiomètre) ───────────────────────
+MOTOR_B_SLOW     = int(65535 * 0.45)   # 45 % — vitesse lente
+MOTOR_B_FAST     = int(65535 * 0.85)   # 85 % — vitesse rapide (évite 100% instable)
 
 # ── Init hardware ─────────────────────────────────────────────────────────────
 # Canal A — bâche
@@ -229,6 +233,61 @@ def moteur_arreter():
     tarp_deploye = False
     led.off()
     print("[MOTEUR A] Arrêté")
+
+# =============================================================================
+# MOTEUR B — Canal B du pont en H (pilotage manuel via dashboard)
+# =============================================================================
+
+def _set_direction_b(forward: bool):
+    """
+    Configure IN3/IN4 pour le sens du moteur B.
+      forward=True  → IN3=1, IN4=0
+      forward=False → IN3=0, IN4=1
+    """
+    if forward:
+        motor_in3.value(1)
+        motor_in4.value(0)
+    else:
+        motor_in3.value(0)
+        motor_in4.value(1)
+
+
+def moteur_b_demarrer(forward: bool, fast: bool):
+    """
+    Lance le moteur B en avant ou arrière, à vitesse lente ou rapide.
+    Rampe courte (300 ms) pour protéger le pont en H.
+    """
+    duty_cible = MOTOR_B_FAST if fast else MOTOR_B_SLOW
+    _set_direction_b(forward)
+
+    # Rampe courte de 300 ms (12 paliers × 25 ms)
+    steps = 12
+    for i in range(steps + 1):
+        motor_b_pwm.duty_u16(int((i / steps) * duty_cible))
+        time.sleep_ms(25)
+
+    vitesse = "RAPIDE" if fast else "LENTE"
+    sens    = "AVANT"  if forward else "ARRIERE"
+    print("[MOTEUR B] {} {} — duty = {} ({:.0f}%)".format(
+        sens, vitesse, duty_cible, duty_cible / 65535 * 100))
+
+
+def moteur_b_arreter():
+    """Arrête le moteur B avec descente progressive (200 ms)."""
+    actuel = motor_b_pwm.duty_u16()
+    if actuel == 0:
+        motor_in3.value(0)
+        motor_in4.value(0)
+        return
+    steps = 8
+    for i in range(steps, -1, -1):
+        motor_b_pwm.duty_u16(int((i / steps) * actuel))
+        time.sleep_ms(25)
+    motor_b_pwm.duty_u16(0)
+    motor_in3.value(0)
+    motor_in4.value(0)
+    print("[MOTEUR B] Arrêté")
+
 
 # =============================================================================
 # POMPE
@@ -542,6 +601,38 @@ def main():
                 effacer_commande_firebase()
                 publier_meteo_firebase()
                 _mqtt_publish(TOPIC_ETAT, "range")
+
+            # ── Commande moteur B (pilotage manuel) ──────────────────────────
+            try:
+                r_b = urequests.get(FIREBASE_BASE + "/motorCommand.json")
+                mot_cmd = r_b.text.strip().strip('"').upper()
+                r_b.close()
+
+                _MOTOR_B_URL = FIREBASE_BASE + "/motorCommand.json"
+                _HDR = {"Content-Type": "application/json"}
+
+                if mot_cmd == "FORWARD_SLOW":
+                    moteur_b_demarrer(forward=True,  fast=False)
+                    urequests.put(_MOTOR_B_URL, data='"null"', headers=_HDR).close()
+
+                elif mot_cmd == "FORWARD_FAST":
+                    moteur_b_demarrer(forward=True,  fast=True)
+                    urequests.put(_MOTOR_B_URL, data='"null"', headers=_HDR).close()
+
+                elif mot_cmd == "BACKWARD_SLOW":
+                    moteur_b_demarrer(forward=False, fast=False)
+                    urequests.put(_MOTOR_B_URL, data='"null"', headers=_HDR).close()
+
+                elif mot_cmd == "BACKWARD_FAST":
+                    moteur_b_demarrer(forward=False, fast=True)
+                    urequests.put(_MOTOR_B_URL, data='"null"', headers=_HDR).close()
+
+                elif mot_cmd in ("STOP", "IDLE"):
+                    moteur_b_arreter()
+                    urequests.put(_MOTOR_B_URL, data='"null"', headers=_HDR).close()
+
+            except Exception as e:
+                print("[Firebase] Erreur poll motorCommand : {}".format(e))
 
             # Commande pompe
             try:
