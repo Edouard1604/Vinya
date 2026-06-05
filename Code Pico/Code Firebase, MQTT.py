@@ -49,7 +49,9 @@ TOPIC_HUM        = MQTT_ROOT + "/humidite"
 TOPIC_ETAT       = MQTT_ROOT + "/etat"
 
 # ── Pins ──────────────────────────────────────────────────────────────────────
-MOTOR_PIN      = 14     # PWM → contrôleur de vitesse
+MOTOR_ENB      = 14     # PWM → vitesse moteur (ENB du pont en H)
+MOTOR_IN3      = 5      # Direction bit A (IN3 du pont en H)
+MOTOR_IN4      = 6      # Direction bit B (IN4 du pont en H)
 POT_PIN        = 26     # ADC0 → potentiomètre
 DHT_PIN        = 15     # DHT11
 LED_PIN        = 27     # LED status
@@ -63,9 +65,14 @@ MOTOR_RAMP_MS    = 1_500    # durée de la montée progressive (ms)
 MOTOR_STOP_MS    = 800      # durée de la descente progressive (ms)
 
 # ── Init hardware ─────────────────────────────────────────────────────────────
-motor_pwm = PWM(Pin(MOTOR_PIN, Pin.OUT))
+motor_pwm = PWM(Pin(MOTOR_ENB, Pin.OUT))
 motor_pwm.freq(MOTOR_PWM_FREQ)
 motor_pwm.duty_u16(0)        # moteur arrêté au démarrage
+
+motor_in3 = Pin(MOTOR_IN3, Pin.OUT)
+motor_in4 = Pin(MOTOR_IN4, Pin.OUT)
+motor_in3.off()   # direction neutre au démarrage
+motor_in4.off()
 
 pot     = ADC(Pin(POT_PIN))
 capteur = dht.DHT11(Pin(DHT_PIN))
@@ -96,25 +103,41 @@ def lire_vitesse_pot() -> int:
     Plage : 30 % min → 100 % max  (valeurs 0–65535 pour duty_u16).
     Le minimum à 30 % protège le contrôleur contre les tensions trop faibles.
     """
-    raw    = pot.read_u16()                              # 0 → 65535
-    min_d  = int(65535 * MOTOR_MIN_DUTY)                 # ~19660
-    max_d  = 65535
-    duty   = min_d + int((raw / 65535) * (max_d - min_d))
+    raw   = pot.read_u16()                              # 0 → 65535
+    min_d = int(65535 * MOTOR_MIN_DUTY)                 # ~19660
+    max_d = 65535
+    duty  = min_d + int((raw / 65535) * (max_d - min_d))
     return duty
+
+
+def _set_direction(forward: bool):
+    """
+    Configure IN3/IN4 du pont en H pour choisir le sens de rotation.
+      forward=True  → IN3=1, IN4=0  (déploiement)
+      forward=False → IN3=0, IN4=1  (rétractation)
+    """
+    if forward:
+        motor_in3.on()
+        motor_in4.off()
+    else:
+        motor_in3.off()
+        motor_in4.on()
+    print("[MOTEUR] Direction → {}".format("AVANT" if forward else "ARRIERE"))
 
 
 def moteur_deployer():
     """
-    Lance le moteur à la vitesse définie par le potentiomètre.
+    Lance le moteur en sens AVANT (déploiement bâche).
     Montée progressive sur MOTOR_RAMP_MS pour protéger la mécanique.
-    Programme un arrêt automatique après duree_action secondes
-    (géré par la boucle principale via motor_stop_at).
+    Programme un arrêt automatique après duree_action secondes.
     """
     global tarp_deploye, motor_stop_at
 
     cible = lire_vitesse_pot()
     steps = 60
     delai = MOTOR_RAMP_MS // steps   # ~25 ms par palier
+
+    _set_direction(forward=True)     # ← IN3=1, IN4=0 → AVANT
 
     print("[MOTEUR] Démarrage progressif → duty cible = {} ({:.1f}%)".format(
         cible, cible / 65535 * 100))
@@ -130,10 +153,37 @@ def moteur_deployer():
     print("[MOTEUR] Bâche en déploiement — arrêt automatique dans {}s".format(duree_action))
 
 
+def moteur_retracter():
+    """
+    Lance le moteur en sens ARRIÈRE (rétractation bâche).
+    Montée progressive puis arrêt automatique après duree_action secondes.
+    """
+    global tarp_deploye, motor_stop_at
+
+    cible = lire_vitesse_pot()
+    steps = 60
+    delai = MOTOR_RAMP_MS // steps
+
+    _set_direction(forward=False)    # ← IN3=0, IN4=1 → ARRIÈRE
+
+    print("[MOTEUR] Rétractation → duty cible = {} ({:.1f}%)".format(
+        cible, cible / 65535 * 100))
+
+    for i in range(steps + 1):
+        duty = int((i / steps) * cible)
+        motor_pwm.duty_u16(duty)
+        time.sleep_ms(delai)
+
+    tarp_deploye  = False
+    motor_stop_at = time.ticks_ms() + duree_action * 1000
+    led.off()
+    print("[MOTEUR] Rétractation en cours — arrêt automatique dans {}s".format(duree_action))
+
+
 def moteur_arreter():
     """
     Coupe le moteur avec descente progressive sur MOTOR_STOP_MS.
-    Annule aussi le timer d'arrêt automatique.
+    Remet IN3/IN4 à LOW et annule le timer automatique.
     """
     global tarp_deploye, motor_stop_at
 
@@ -141,7 +191,8 @@ def moteur_arreter():
 
     actuel = motor_pwm.duty_u16()
     if actuel == 0:
-        tarp_deploye = False
+        motor_in3.off()
+        motor_in4.off()
         led.off()
         return
 
@@ -156,6 +207,8 @@ def moteur_arreter():
         time.sleep_ms(delai)
 
     motor_pwm.duty_u16(0)
+    motor_in3.off()   # direction neutre après arrêt
+    motor_in4.off()
     tarp_deploye = False
     led.off()
     print("[MOTEUR] Arrêté")
@@ -298,7 +351,11 @@ def on_message(topic, msg):
             publier_meteo_firebase()
             _mqtt_publish(TOPIC_ETAT, "deploye")
 
-        elif payload in ("fermer", "stop") and tarp_deploye:
+        elif payload == "fermer" and tarp_deploye:
+            moteur_retracter()          # ← sens ARRIÈRE pour ranger la bâche
+            publier_meteo_firebase()
+            _mqtt_publish(TOPIC_ETAT, "retractation")
+        elif payload == "stop":
             moteur_arreter()
             publier_meteo_firebase()
             _mqtt_publish(TOPIC_ETAT, "range")
@@ -431,7 +488,13 @@ def main():
                 publier_meteo_firebase()
                 _mqtt_publish(TOPIC_ETAT, "deploye")
 
-            elif cmd in ("RETRACT", "STOP") and tarp_deploye:
+            elif cmd == "RETRACT" and tarp_deploye:
+                moteur_retracter()          # ← sens ARRIÈRE
+                effacer_commande_firebase()
+                publier_meteo_firebase()
+                _mqtt_publish(TOPIC_ETAT, "retractation")
+
+            elif cmd == "STOP":
                 moteur_arreter()
                 effacer_commande_firebase()
                 publier_meteo_firebase()
