@@ -49,11 +49,18 @@ TOPIC_HUM        = MQTT_ROOT + "/humidite"
 TOPIC_ETAT       = MQTT_ROOT + "/etat"
 
 # ── Pins ──────────────────────────────────────────────────────────────────────
-MOTOR_ENB      = 14     # PWM → vitesse moteur (ENB du pont en H)
-MOTOR_IN3      = 5      # Direction bit A (IN3 du pont en H)
-MOTOR_IN4      = 6      # Direction bit B (IN4 du pont en H)
+# ── Canal A — Moteur bâche ────────────────────────────────────────────────────
+MOTOR_A_ENA    = 11     # PWM → vitesse moteur A (ENA)
+MOTOR_A_IN1    = 12     # Direction bit 1 moteur A (IN1)
+MOTOR_A_IN2    = 13     # Direction bit 2 moteur A (IN2)
+
+# ── Canal B — Moteur pompe / 2ème mécanisme ───────────────────────────────────
+MOTOR_B_ENB    = 14     # PWM → vitesse moteur B (ENB)
+MOTOR_B_IN3    = 15     # Direction bit 1 moteur B (IN3)  ⚠ même pin que DHT11 → voir note
+MOTOR_B_IN4    = 16     # Direction bit 2 moteur B (IN4)
+
 POT_PIN        = 26     # ADC0 → potentiomètre
-DHT_PIN        = 15     # DHT11
+DHT_PIN        = 22     # DHT11 → déplacé sur GP22 (GP15 occupé par IN3)
 LED_PIN        = 27     # LED status
 BTN_PIN        = 20     # Bouton mode
 PUMP_PIN       = 4      # Relais pompe (HIGH = ON)
@@ -65,14 +72,23 @@ MOTOR_RAMP_MS    = 1_500    # durée de la montée progressive (ms)
 MOTOR_STOP_MS    = 800      # durée de la descente progressive (ms)
 
 # ── Init hardware ─────────────────────────────────────────────────────────────
-motor_pwm = PWM(Pin(MOTOR_ENB, Pin.OUT))
-motor_pwm.freq(MOTOR_PWM_FREQ)
-motor_pwm.duty_u16(0)        # moteur arrêté au démarrage
+# Canal A — bâche
+motor_a_pwm = PWM(Pin(MOTOR_A_ENA, Pin.OUT))
+motor_a_pwm.freq(MOTOR_PWM_FREQ)
+motor_a_pwm.duty_u16(0)
+motor_in1 = Pin(MOTOR_A_IN1, Pin.OUT)
+motor_in2 = Pin(MOTOR_A_IN2, Pin.OUT)
+motor_in1.value(0)
+motor_in2.value(0)
 
-motor_in3 = Pin(MOTOR_IN3, Pin.OUT)
-motor_in4 = Pin(MOTOR_IN4, Pin.OUT)
-motor_in3.off()   # direction neutre au démarrage
-motor_in4.off()
+# Canal B — 2ème moteur
+motor_b_pwm = PWM(Pin(MOTOR_B_ENB, Pin.OUT))
+motor_b_pwm.freq(MOTOR_PWM_FREQ)
+motor_b_pwm.duty_u16(0)
+motor_in3 = Pin(MOTOR_B_IN3, Pin.OUT)
+motor_in4 = Pin(MOTOR_B_IN4, Pin.OUT)
+motor_in3.value(0)
+motor_in4.value(0)
 
 pot     = ADC(Pin(POT_PIN))
 capteur = dht.DHT11(Pin(DHT_PIN))
@@ -110,53 +126,26 @@ def lire_vitesse_pot() -> int:
     return duty
 
 
-def _set_direction(forward: bool):
+def _set_direction_a(forward: bool):
     """
-    Configure IN3/IN4 du pont en H pour choisir le sens de rotation.
-      forward=True  → IN3=1, IN4=0  (déploiement)
-      forward=False → IN3=0, IN4=1  (rétractation)
+    Canal A — sens de rotation moteur bâche.
+      forward=True  → IN1=1, IN2=0  (déploiement)
+      forward=False → IN1=0, IN2=1  (rétractation)
     """
     if forward:
-        motor_in3.on()
-        motor_in4.off()
+        motor_in1.value(1)
+        motor_in2.value(0)
     else:
-        motor_in3.off()
-        motor_in4.on()
-    print("[MOTEUR] Direction → {}".format("AVANT" if forward else "ARRIERE"))
+        motor_in1.value(0)
+        motor_in2.value(1)
+    print("[MOTEUR A] Direction → {}".format("AVANT" if forward else "ARRIERE"))
 
 
 def moteur_deployer():
     """
-    Lance le moteur en sens AVANT (déploiement bâche).
-    Montée progressive sur MOTOR_RAMP_MS pour protéger la mécanique.
-    Programme un arrêt automatique après duree_action secondes.
-    """
-    global tarp_deploye, motor_stop_at
-
-    cible = lire_vitesse_pot()
-    steps = 60
-    delai = MOTOR_RAMP_MS // steps   # ~25 ms par palier
-
-    _set_direction(forward=True)     # ← IN3=1, IN4=0 → AVANT
-
-    print("[MOTEUR] Démarrage progressif → duty cible = {} ({:.1f}%)".format(
-        cible, cible / 65535 * 100))
-
-    for i in range(steps + 1):
-        duty = int((i / steps) * cible)
-        motor_pwm.duty_u16(duty)
-        time.sleep_ms(delai)
-
-    tarp_deploye  = True
-    motor_stop_at = time.ticks_ms() + duree_action * 1000
-    led.on()
-    print("[MOTEUR] Bâche en déploiement — arrêt automatique dans {}s".format(duree_action))
-
-
-def moteur_retracter():
-    """
-    Lance le moteur en sens ARRIÈRE (rétractation bâche).
-    Montée progressive puis arrêt automatique après duree_action secondes.
+    Canal A — lance le moteur en sens AVANT (déploiement bâche).
+    Montée progressive sur MOTOR_RAMP_MS.
+    Auto-stop après duree_action secondes via motor_stop_at.
     """
     global tarp_deploye, motor_stop_at
 
@@ -164,54 +153,78 @@ def moteur_retracter():
     steps = 60
     delai = MOTOR_RAMP_MS // steps
 
-    _set_direction(forward=False)    # ← IN3=0, IN4=1 → ARRIÈRE
+    _set_direction_a(forward=True)   # IN1=1, IN2=0
 
-    print("[MOTEUR] Rétractation → duty cible = {} ({:.1f}%)".format(
+    print("[MOTEUR A] Démarrage → duty cible = {} ({:.1f}%)".format(
         cible, cible / 65535 * 100))
 
     for i in range(steps + 1):
-        duty = int((i / steps) * cible)
-        motor_pwm.duty_u16(duty)
+        motor_a_pwm.duty_u16(int((i / steps) * cible))
+        time.sleep_ms(delai)
+
+    tarp_deploye  = True
+    motor_stop_at = time.ticks_ms() + duree_action * 1000
+    led.on()
+    print("[MOTEUR A] Déploiement — arrêt dans {}s".format(duree_action))
+
+
+def moteur_retracter():
+    """
+    Canal A — lance le moteur en sens ARRIÈRE (rétractation bâche).
+    Auto-stop après duree_action secondes.
+    """
+    global tarp_deploye, motor_stop_at
+
+    cible = lire_vitesse_pot()
+    steps = 60
+    delai = MOTOR_RAMP_MS // steps
+
+    _set_direction_a(forward=False)  # IN1=0, IN2=1
+
+    print("[MOTEUR A] Rétractation → duty cible = {} ({:.1f}%)".format(
+        cible, cible / 65535 * 100))
+
+    for i in range(steps + 1):
+        motor_a_pwm.duty_u16(int((i / steps) * cible))
         time.sleep_ms(delai)
 
     tarp_deploye  = False
     motor_stop_at = time.ticks_ms() + duree_action * 1000
     led.off()
-    print("[MOTEUR] Rétractation en cours — arrêt automatique dans {}s".format(duree_action))
+    print("[MOTEUR A] Rétractation — arrêt dans {}s".format(duree_action))
 
 
 def moteur_arreter():
     """
-    Coupe le moteur avec descente progressive sur MOTOR_STOP_MS.
-    Remet IN3/IN4 à LOW et annule le timer automatique.
+    Canal A — descente progressive PWM puis direction neutre.
+    Annule le timer automatique.
     """
     global tarp_deploye, motor_stop_at
 
-    motor_stop_at = None   # Annule le timer automatique si présent
+    motor_stop_at = None
 
-    actuel = motor_pwm.duty_u16()
+    actuel = motor_a_pwm.duty_u16()
     if actuel == 0:
-        motor_in3.off()
-        motor_in4.off()
+        motor_in1.value(0)
+        motor_in2.value(0)
         led.off()
         return
 
     steps = 40
-    delai = MOTOR_STOP_MS // steps   # ~20 ms par palier
+    delai = MOTOR_STOP_MS // steps
 
-    print("[MOTEUR] Arrêt progressif depuis duty = {}".format(actuel))
+    print("[MOTEUR A] Arrêt progressif depuis duty = {}".format(actuel))
 
     for i in range(steps, -1, -1):
-        duty = int((i / steps) * actuel)
-        motor_pwm.duty_u16(duty)
+        motor_a_pwm.duty_u16(int((i / steps) * actuel))
         time.sleep_ms(delai)
 
-    motor_pwm.duty_u16(0)
-    motor_in3.off()   # direction neutre après arrêt
-    motor_in4.off()
+    motor_a_pwm.duty_u16(0)
+    motor_in1.value(0)
+    motor_in2.value(0)
     tarp_deploye = False
     led.off()
-    print("[MOTEUR] Arrêté")
+    print("[MOTEUR A] Arrêté")
 
 # =============================================================================
 # POMPE
