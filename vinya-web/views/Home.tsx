@@ -2,7 +2,7 @@ import React, { useContext, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ActionButton } from '../components/ActionButton';
 import { ShinyButton } from '../components/ui/ShinyButton';
-import { fetchFastVineyardData, sendTarpCommand, sendPumpCommand, sendMotorCommand, type MotorCmd } from '../services/firebaseService';
+import { fetchFastVineyardData, sendTarpCommand, sendPumpCommand, sendMotorCommand, sendTarpDuration, type MotorCmd } from '../services/firebaseService';
 import { isClientConnected, publishMessage } from '../services/mqttService';
 import { VineyardContext } from '../constants';
 
@@ -41,6 +41,7 @@ export const Home: React.FC = () => {
       catch (e) { console.error('MQTT Error:', e); }
     }
     setTarpStatus('Envoi de la commande...');
+    await sendTarpDuration(tarpDuration);   // écrit la durée dans Firebase avant la commande
     const firebaseSuccess = await sendTarpCommand('deploy');
     if (mqttSuccess || firebaseSuccess) {
       setTarpStatus('Déploiement en cours...');
@@ -67,6 +68,7 @@ export const Home: React.FC = () => {
       catch (e) { console.error('MQTT Error:', e); }
     }
     setTarpStatus('Envoi de la commande...');
+    await sendTarpDuration(tarpDuration);   // écrit la durée dans Firebase avant la commande
     const firebaseSuccess = await sendTarpCommand('retract');
     if (mqttSuccess || firebaseSuccess) {
       setTarpStatus('Rétractation en cours...');

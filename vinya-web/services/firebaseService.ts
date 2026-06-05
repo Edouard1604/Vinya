@@ -66,6 +66,23 @@ export const sendTarpCommand = async (action: 'deploy' | 'retract' | 'stop'): Pr
   }
 };
 
+export const sendTarpDuration = async (seconds: number): Promise<boolean> => {
+  try {
+    const url = FIREBASE_DB_URL.replace('stationMeteo.json', 'tarpDuration.json');
+    console.log(`[Firebase] Durée action → ${seconds}s`);
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(seconds),
+    });
+    if (!res.ok) throw new Error(`Firebase duration write failed: ${res.statusText}`);
+    return true;
+  } catch (err) {
+    console.error('[Firebase] Erreur sendTarpDuration:', err);
+    return false;
+  }
+};
+
 export type MotorCmd = 'FORWARD_SLOW' | 'FORWARD_FAST' | 'BACKWARD_SLOW' | 'BACKWARD_FAST' | 'STOP' | 'IDLE';
 
 export const sendMotorCommand = async (cmd: MotorCmd): Promise<boolean> => {
