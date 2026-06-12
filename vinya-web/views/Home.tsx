@@ -2,7 +2,7 @@ import React, { useContext, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ActionButton } from '../components/ActionButton';
 import { ShinyButton } from '../components/ui/ShinyButton';
-import { fetchFastVineyardData, sendTarpCommand, sendPumpCommand, sendMotorCommand, sendTarpDuration, type MotorCmd } from '../services/firebaseService';
+import { fetchFastVineyardData, sendTarpCommand, sendPumpCommand, sendMotorCommand, sendTarpDuration, sendPumpDuration, type MotorCmd } from '../services/firebaseService';
 import { isClientConnected, publishMessage } from '../services/mqttService';
 import { VineyardContext } from '../constants';
 
@@ -88,10 +88,13 @@ export const Home: React.FC = () => {
     const nextState = !pumpActive;
     const cmd = nextState ? 'ON' : 'OFF';
     setPumpStatus(nextState ? 'Démarrage pompe...' : 'Arrêt pompe...');
-    // Publie la durée via MQTT avant la commande ON
-    if (nextState && isClientConnected()) {
-      try { publishMessage('bzh/mecatro/dashboard/vinya/pompe_duree', String(pumpDuration)); }
-      catch (e) { console.error('MQTT pump duration error:', e); }
+    // Écrit la durée pompe dans Firebase (canal fiable) + MQTT avant la commande ON
+    if (nextState) {
+      await sendPumpDuration(pumpDuration);
+      if (isClientConnected()) {
+        try { publishMessage('bzh/mecatro/dashboard/vinya/pompe_duree', String(pumpDuration)); }
+        catch (e) { console.error('MQTT pump duration error:', e); }
+      }
     }
     const ok = await sendPumpCommand(cmd);
     if (ok) {
@@ -102,6 +105,32 @@ export const Home: React.FC = () => {
     }
     setTimeout(() => setPumpStatus(''), 3000);
     setPumpLoading(false);
+  };
+
+  // Bouton pompe MAINTIEN : ON tant qu'on appuie, OFF au relâchement (temps réel via MQTT)
+  const [pumpHeld, setPumpHeld] = useState(false);
+
+  const startPumpHold = () => {
+    setPumpHeld(true);
+    setPumpStatus('Pompe (maintien)...');
+    if (isClientConnected()) {
+      try { publishMessage('bzh/mecatro/dashboard/vinya/pompe_manuel', 'on'); }
+      catch (e) { console.error('MQTT pompe_manuel on error:', e); }
+    }
+    // Backup Firebase (au cas où MQTT non connecté)
+    sendPumpCommand('ON');
+  };
+
+  const stopPumpHold = () => {
+    if (!pumpHeld) return;
+    setPumpHeld(false);
+    setPumpStatus('Pompe arrêtée');
+    if (isClientConnected()) {
+      try { publishMessage('bzh/mecatro/dashboard/vinya/pompe_manuel', 'off'); }
+      catch (e) { console.error('MQTT pompe_manuel off error:', e); }
+    }
+    sendPumpCommand('OFF');
+    setTimeout(() => setPumpStatus(''), 2000);
   };
 
   // Re-envoie la commande si la vitesse change pendant qu'un moteur tourne
@@ -334,6 +363,35 @@ export const Home: React.FC = () => {
                 </span>
               )}
             </button>
+
+            {/* Bouton Pompe MAINTIEN — actif tant qu'on appuie */}
+            <button
+              onMouseDown={startPumpHold}
+              onMouseUp={stopPumpHold}
+              onMouseLeave={stopPumpHold}
+              onTouchStart={(e) => { e.preventDefault(); startPumpHold(); }}
+              onTouchEnd={stopPumpHold}
+              onTouchCancel={stopPumpHold}
+              className={`select-none relative overflow-hidden flex items-center gap-3 px-8 py-3 rounded-2xl font-bold text-sm border-2 transition-all duration-150 active:scale-95 shadow-md
+                ${pumpHeld
+                  ? 'bg-cyan-600 border-cyan-500 text-white scale-105 shadow-cyan-300'
+                  : 'bg-white border-cyan-200 text-cyan-700 hover:bg-cyan-50 hover:border-cyan-400'
+                }`}
+            >
+              {pumpHeld && (
+                <span className="absolute inset-0 rounded-2xl animate-ping bg-cyan-400/30 pointer-events-none" />
+              )}
+              <svg className="w-5 h-5 relative z-10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
+              <span className="relative z-10 uppercase tracking-widest">
+                {pumpHeld ? 'Pompe active' : 'Maintenir pompe'}
+              </span>
+            </button>
+            <p className="text-[10px] text-gray-400 -mt-1">
+              Maintenir le bouton pour activer la pompe en continu
+            </p>
 
             {/* Pump status */}
             {pumpStatus && (

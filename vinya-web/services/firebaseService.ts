@@ -83,6 +83,23 @@ export const sendTarpDuration = async (seconds: number): Promise<boolean> => {
   }
 };
 
+export const sendPumpDuration = async (seconds: number): Promise<boolean> => {
+  try {
+    const url = FIREBASE_DB_URL.replace('stationMeteo.json', 'pumpDuration.json');
+    console.log(`[Firebase] Durée pompe → ${seconds}s`);
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(seconds),
+    });
+    if (!res.ok) throw new Error(`Firebase pump duration write failed: ${res.statusText}`);
+    return true;
+  } catch (err) {
+    console.error('[Firebase] Erreur sendPumpDuration:', err);
+    return false;
+  }
+};
+
 export type MotorCmd = 'FORWARD_SLOW' | 'FORWARD_FAST' | 'BACKWARD_SLOW' | 'BACKWARD_FAST' | 'STOP' | 'IDLE';
 
 export const sendMotorCommand = async (cmd: MotorCmd): Promise<boolean> => {
