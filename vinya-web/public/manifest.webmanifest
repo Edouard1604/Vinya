@@ -1,0 +1,25 @@
+{
+  "name": "Vinya",
+  "short_name": "Vinya",
+  "description": "Station météo autonome et gestion de bâche pour les vignes",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#FEFAE0",
+  "theme_color": "#640D14",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
