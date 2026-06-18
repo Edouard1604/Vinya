@@ -308,20 +308,20 @@ export const Home: React.FC = () => {
             <div className="relative w-full max-w-sm">
               <input
                 type="range"
-                min={5}
+                min={1}
                 max={120}
-                step={5}
+                step={1}
                 value={tarpDuration}
                 onChange={(e) => setTarpDuration(Number(e.target.value))}
                 className="w-full h-2 rounded-full appearance-none cursor-pointer"
                 style={{
-                  background: `linear-gradient(to right, #640D14 0%, #640D14 ${((tarpDuration - 5) / 115) * 100}%, #e5e7eb ${((tarpDuration - 5) / 115) * 100}%, #e5e7eb 100%)`,
+                  background: `linear-gradient(to right, #640D14 0%, #640D14 ${((tarpDuration - 1) / 119) * 100}%, #e5e7eb ${((tarpDuration - 1) / 119) * 100}%, #e5e7eb 100%)`,
                   accentColor: '#640D14',
                 }}
               />
             </div>
             <div className="flex justify-between w-full max-w-sm text-[10px] text-gray-300 font-medium select-none">
-              <span>5s</span>
+              <span>1s</span>
               <span>30s</span>
               <span>60s</span>
               <span>90s</span>
