@@ -100,6 +100,24 @@ export const sendPumpDuration = async (seconds: number): Promise<boolean> => {
   }
 };
 
+export const sendMode = async (auto: boolean): Promise<boolean> => {
+  try {
+    const url = FIREBASE_DB_URL.replace('stationMeteo.json', 'mode.json');
+    const value = auto ? 'AUTO' : 'MANU';
+    console.log(`[Firebase] Mode → ${value}`);
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(value),
+    });
+    if (!res.ok) throw new Error(`Firebase mode write failed: ${res.statusText}`);
+    return true;
+  } catch (err) {
+    console.error('[Firebase] Erreur sendMode:', err);
+    return false;
+  }
+};
+
 export type MotorCmd = 'FORWARD_SLOW' | 'FORWARD_FAST' | 'BACKWARD_SLOW' | 'BACKWARD_FAST' | 'STOP' | 'IDLE';
 
 export const sendMotorCommand = async (cmd: MotorCmd): Promise<boolean> => {

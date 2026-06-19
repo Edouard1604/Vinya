@@ -2,7 +2,7 @@ import React, { useContext, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ActionButton } from '../components/ActionButton';
 import { ShinyButton } from '../components/ui/ShinyButton';
-import { fetchFastVineyardData, sendTarpCommand, sendPumpCommand, sendMotorCommand, sendTarpDuration, sendPumpDuration, type MotorCmd } from '../services/firebaseService';
+import { fetchFastVineyardData, sendTarpCommand, sendPumpCommand, sendMotorCommand, sendTarpDuration, sendPumpDuration, sendMode, type MotorCmd } from '../services/firebaseService';
 import { isClientConnected, publishMessage } from '../services/mqttService';
 import { VineyardContext } from '../constants';
 
@@ -181,6 +181,8 @@ export const Home: React.FC = () => {
 
   const handleAutoModeToggle = () => {
     const newAutoMode = !data.isAutoMode;
+    // Firebase (canal fiable) + MQTT (instantané) pour que le Pico applique le mode
+    sendMode(newAutoMode);
     if (isClientConnected()) {
       try { publishMessage('bzh/mecatro/dashboard/vinya/mode', newAutoMode ? 'auto' : 'manu'); }
       catch (e) { console.error('MQTT Error (Mode):', e); }
